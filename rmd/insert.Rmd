@@ -1,0 +1,170 @@
+---
+title: "data_insertion"
+output: html_document
+date: "2023-04-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Importing and loading necessary libraries
+
+```{r}
+install.packages("RMySQL")
+install.packages("DBI")
+#install.packages("dplyr")
+
+library(RMySQL)
+library(DBI)
+#library(dplyr)
+```
+Connecting to DB
+
+```{r}
+con <- dbConnect(MySQL(), user = "root", password = "root", dbname = "appointment_booking", host = "localhost", bulk = TRUE, prefer_large_objects = TRUE)
+dbSendQuery(con,'SET GLOBAL connect_timeout=28800')
+dbSendQuery(con,'SET GLOBAL interactive_timeout=28800')
+dbSendQuery(con,'SET GLOBAL wait_timeout=28800')
+#dbSendQuery(con,'SET GLOBAL innodb_log_file_size=128M')
+dbListTables(con)
+```
+
+Importing the raw data from CSV
+```{r}
+file_path <- "C:\\Users\\ameya\\Documents\\IUB\\Spring 2023\\Applied Database Technologies\\Project\\DAC_NationalDownloadableFile.csv"
+df <- read.csv(file_path, header = TRUE)
+filtered_df <- subset(df, st == "IN" & Med_sch != "OTHER")
+nrow(filtered_df)
+filtered_df <- subset(filtered_df, !is.na(Cred) & !is.na(phn_numbr) & !is.na(sec_spec_all))
+nrow(filtered_df)
+#head(filtered_df,5)
+#sample_df <- filtered_df[sample(nrow(filtered_df), 1000), ]
+#write.csv(sample_df, file = "C:\\Users\\ameya\\Documents\\IUB\\Spring 2023\\Applied Database Technologies\\Project\\sampled_data.csv", row.names = FALSE)
+
+```
+
+Inserting data into the different normalized tables 
+Reference: https://www.geeksforgeeks.org/how-to-write-entire-dataframe-into-mysql-table-in-r/
+```{r}
+doctors_df <- filtered_df[, c("NPI", "frst_nm", "mid_nm", "lst_nm", "gndr")]
+
+dbWriteTable(con, "Doctors", doctors_df[1:5], overWrite=FALSE, append=TRUE)
+```
+
+```{r}
+#dbSendQuery(con,"DELETE FROM Doctors")
+#dbDisconnect(con)
+```
+
+Inserting into Addresses table
+
+```{r}
+addresses_df <- sample_df[, c("adrs_id", "adr_ln_1", "adr_ln_2", "cty", "st", "zip")]
+addresses_df$zip <- paste(substr(addresses_df$zip,0,5), "-",substr(addresses_df$zip,6,9))
+addresses_df <- addresses_df[!duplicated(addresses_df$adrs_id), ]
+#dbWriteTable(con, "Addresses", addresses_df, overWrite=FALSE, append=TRUE)
+query <- paste0("INSERT INTO Addresses VALUES ", paste0("('", addresses_df$adrs_id, "', '", addresses_df$adr_ln_1, "', '", addresses_df$adr_ln_2, "', '", addresses_df$cty, "', '", addresses_df$st, "', '", addresses_df$zip, "')", collapse = ", "))
+dbExecute(con, query)
+```
+Inserting into Contacts table
+
+```{r}
+contacts_df <- sample_df[, c("NPI", "phn_numbr")]
+contacts_df$phn_numbr <- paste("(", substr(contacts_df$phn_numbr,0,3), ") -", substr(contacts_df$phn_numbr,4,6), "-",  substr(contacts_df$phn_numbr,7,10))
+head(contacts_df,5)
+query <- paste0("INSERT INTO Contacts VALUES ", paste0("(", contacts_df$NPI, ", '", contacts_df$phn_numbr, "')", collapse = ", "))
+dbExecute(con, query)
+```
+
+Inserting into Services table
+
+```{r}
+services_df <- sample_df[, c("NPI", "Telehlth", "ind_assgn", "grp_assgn")]
+services_df <- services_df[!duplicated(services_df$NPI), ]
+
+query <- paste0("INSERT INTO Services VALUES ", paste0("(", services_df$NPI, ", '", services_df$Telehlth, "', '", services_df$ind_assgn, "', '", services_df$grp_assgn, "')", collapse = ", "))
+dbExecute(con, query)
+```
+
+Inserting into Schools table
+
+```{r}
+schools <- sample_df$Med_sch
+schools <- unique(schools)
+
+query <- paste0("INSERT INTO Schools (SchoolName) VALUES ", paste0("('", schools, "')", collapse = ", "))
+dbExecute(con, query)
+```
+
+Inserting into Education table
+
+```{r}
+education_df <- sample_df[, c("NPI", "Med_sch", "Cred", "Grd_yr")]
+dbWriteTable(con, "Education_temp", education_df, APPEND = TRUE)
+
+```
+
+Inserting into DoctorClinics table
+
+```{r}
+clinics_df <- sample_df[, c("NPI", "adrs_id")]
+clinics_df <- clinics_df[!duplicated(clinics_df$NPI), ]
+
+query <- paste0("INSERT INTO DoctorClinics VALUES ", paste0("(", clinics_df$NPI, ", '", clinics_df$adrs_id, "')", collapse = ", "))
+dbExecute(con, query)
+```
+
+Inserting into DoctorOrganizations table
+
+```{r}
+doctor_organizations_df <- sample_df[, c("NPI", "org_pac_id", "adrs_id")]
+doctor_organizations_df <- doctor_organizations_df[complete.cases(doctor_organizations_df$org_pac_id), ]
+duplicates_df <- doctor_organizations_df[!duplicated(doctor_organizations_df$adrs_id), ]
+duplicates_df$IsHospital <- rep(1, nrow(duplicates_df))
+uniques_df <- doctor_organizations_df[duplicated(doctor_organizations_df$adrs_id), ]
+
+query <- paste0("INSERT INTO DoctorOrganizations VALUES ", paste0("(", duplicates_df$NPI, ", '", duplicates_df$org_pac_id, "', '", duplicates_df$IsHospital, "')", collapse = ", "))
+dbExecute(con, query)
+```
+
+Inserting into Specialties table
+
+```{r}
+specialties <- c(sample_df$pri_spec, sample_df$sec_spec_1, sample_df$sec_spec_2, sample_df$sec_spec_3, sample_df$sec_spec_4)
+specialties <- unique(specialties)
+
+query <- paste0("INSERT INTO Specialties (SpecialtyName) VALUES ", paste0("('", specialties, "')", collapse = ", "))
+dbExecute(con, query)
+```
+
+Inserting into DoctorSpecialties table
+
+```{r}
+doctor_specialties_df <- sample_df[, c("NPI", "pri_spec", "sec_spec_1", "sec_spec_2", "sec_spec_3", "sec_spec_4")]
+
+primary_specialty_df <- data.frame(NPI = doctor_specialties_df$NPI, specialty = doctor_specialties_df$pri_spec)
+primary_specialty_df$IsPrimary <- rep(1, nrow(primary_specialty_df))
+
+
+secondary_specialty1_df <- data.frame(NPI = doctor_specialties_df$NPI, specialty = doctor_specialties_df$sec_spec_1)
+secondary_specialty1_df[complete.cases(secondary_specialty1_df$specialty), ]
+secondary_specialty1_df$IsPrimary <- rep(0, nrow(secondary_specialty1_df))
+
+secondary_specialty2_df <- data.frame(NPI = doctor_specialties_df$NPI, specialty = doctor_specialties_df$sec_spec_2)
+secondary_specialty2_df <- secondary_specialty2_df[complete.cases(secondary_specialty2_df$specialty), ]
+secondary_specialty2_df$IsPrimary <- rep(0, nrow(secondary_specialty2_df))
+
+secondary_specialty3_df <- data.frame(NPI = doctor_specialties_df$NPI, specialty = doctor_specialties_df$sec_spec_3)
+secondary_specialty3_df <- secondary_specialty3_df[complete.cases(secondary_specialty3_df$specialty), ]
+secondary_specialty3_df$IsPrimary <- rep(0, nrow(secondary_specialty3_df))
+
+secondary_specialty4_df <- data.frame(NPI = doctor_specialties_df$NPI, specialty = doctor_specialties_df$sec_spec_4)
+secondary_specialty4_df <- secondary_specialty4_df[complete.cases(secondary_specialty4_df$specialty), ]
+secondary_specialty4_df$IsPrimary <- rep(0, nrow(secondary_specialty4_df))
+
+nrow(primary_specialty_df)
+combined_df <- rbind(primary_specialty_df, secondary_specialty1_df, secondary_specialty2_df, secondary_specialty3_df, secondary_specialty4_df)
+nrow(combined_df)
+dbWriteTable(con, "DoctorSpecialties_temp", combined_df, APPEND = TRUE)
+```
